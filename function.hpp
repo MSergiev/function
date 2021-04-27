@@ -58,6 +58,22 @@ namespace hpp
         return ( val != no_value );
     }
 
+    // Use to resolve overloaded functions
+    #ifndef get_overload
+    #define get_overload( function ) \
+    []( auto&&... args ) -> decltype(auto) { return function(std::forward<decltype(args)>(args)...); }
+    #else
+    static_assert( false, "Function: Definition of get_overload already exists!" );
+    #endif
+
+    // Use to resolve overloaded member functions
+    #ifndef get_overload_member
+    #define get_overload_member( class_ptr, function ) \
+    [class_ptr]( auto&&... args ) -> decltype(auto) { return (class_ptr)->function(std::forward<decltype(args)>(args)...); }
+    #else
+    static_assert( false, "Function: Definition of get_overload_member already exists!" );
+    #endif
+
 // Enablers
 
     template<typename T>
@@ -715,4 +731,110 @@ namespace hpp
             connect( no_value, object_ptr, method_ptr );
         }
     };
+    
+// Overload set handler
+
+    template<typename... Functions>
+    class overload_set
+    {
+        using OverloadSet = std::tuple<function<Functions>...>;
+        OverloadSet overload_set_ {};
+
+        template <typename T, typename Tuple>
+        struct has_type;
+
+        template <typename T>
+        struct has_type<T, std::tuple<>> : std::false_type {};
+
+        template <typename T, typename U, typename... Ts>
+        struct has_type<T, std::tuple<U, Ts...>> : has_type<T, std::tuple<Ts...>> {};
+
+        template <typename T, typename... Ts>
+        struct has_type<T, std::tuple<T, Ts...>> : std::true_type {};
+
+        template <typename T>
+        using has_overload = has_type<T, OverloadSet>;
+
+        template<typename Sentinel, typename Function, std::size_t...Is>
+        void assign_overload( Sentinel&& sentinel, Function&& func, std::index_sequence<Is...> /*seq*/ )
+        {
+            using expander = int[];
+            (void)expander { 0, ((void)std::get<Is>(overload_set_).connect(std::forward<Sentinel>(sentinel), std::forward<Function>(func)), 0)... };
+        }
+
+        template<typename Sentinel, typename Function>
+        void assign_overload( Sentinel&& sentinel, Function&& func )
+        {
+            assign_overload( std::forward<Sentinel>(sentinel), std::forward<Function>(func), std::make_index_sequence<sizeof...(Functions)>() );
+        }
+
+    public:
+
+        template<typename Sentinel, typename Function, typename = _sentinel_function_enabler<overload_set, Function, Sentinel>>
+        void connect( const Sentinel& sentinel,
+                      Function&& f )
+        {
+            assign_overload( sentinel, std::forward<Function>(f) );
+        }
+
+        template<typename Function, typename = _function_enabler<overload_set, Function>>
+        void connect( Function&& f )
+        {
+            connect( no_value, std::forward<Function>(f) );
+        }
+
+        overload_set() = default;
+
+        template<typename Sentinel, typename Function, typename = _sentinel_function_enabler<overload_set, Function, Sentinel>>
+        overload_set( const Sentinel& sentinel,
+                      Function&& f )
+        {
+            connect( sentinel, std::forward<Function>(f) );
+        }
+
+        template<typename Function, typename = _function_enabler<overload_set, Function>>
+        overload_set( Function&& f )
+        {
+            connect( no_value, std::forward<Function>(f) );
+        }
+
+        template<typename Function>
+        auto get() -> function<Function>&
+        {
+            static_assert( has_overload<function<Function>>(), "No such function signature found in the overload set" );
+            return std::get<function<Function>>( overload_set_ );
+        }
+
+        template<typename Function>
+        auto get() const -> const function<Function>&
+        {
+            static_assert( has_overload<function<Function>>(), "No such function signature found in the overload set" );
+            return std::get<function<Function>>( overload_set_ );
+        }
+
+        template<typename ReturnType = void, typename... Args>
+        auto call( Args... args ) -> typename std::enable_if<is_void<ReturnType>::value, void>::type
+        {
+            get<ReturnType(Args...)>()( std::forward<Args>(args)... );
+        }
+
+        template<typename ReturnType, typename... Args>
+        auto call( Args... args ) -> typename std::enable_if<!is_void<ReturnType>::value, optional<ReturnType>>::type
+        {
+            return get<ReturnType(Args...)>()( std::forward<Args>(args)... );
+        }
+
+        template<typename ReturnType = void, typename... Args>
+        auto operator()( Args... args ) -> typename std::enable_if<is_void<ReturnType>::value, void>::type
+        {
+            call( std::forward<Args>(args)... );
+        }
+
+        template<typename ReturnType, typename... Args>
+        auto operator()( Args... args ) -> typename std::enable_if<!is_void<ReturnType>::value, optional<ReturnType>>::type
+        {
+            return call( std::forward<Args>(args)... );
+        }
+    };
+    
 } // namespace hpp
